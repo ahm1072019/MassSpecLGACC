@@ -1,0 +1,184 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+####Heatmap for Mass Spec
+
+library(gplots)
+
+data = read.table("Final_Heatmap_input.txt", header = T, stringsAsFactors = F, check.names=FALSE, row.names=1)
+
+data <- data + 1
+
+data2 = log2(data)
+
+data2 <- na.omit(data2)
+
+Colors=c("blue", "yellow")
+Colors=colorRampPalette(Colors)(100)
+
+data_matrix <- data.matrix(round(data2))
+hr <- hclust(as.dist(1-cor(t(data_matrix), method = "pearson")), method = "complete")
+
+hc <- hclust(as.dist(1-cor(data_matrix, method="spearman")), method="average")
+
+tiff(file="2023_5_8_LGACC_mass_spec_heatmap.tiff", width = 10, height = 20, units = "in", res = 800)
+par(cex.main=2, cex.lab=2, cex.axis=2)
+heatmap.2(as.matrix(data2), margins=c(8,8),col=Colors, scale="row", key=T, keysize=1.0, lhei = c(1,9), density.info="none", trace="none", cexCol=3, cexRow=3, srtCol=75, dendrogram="both", Rowv=as.dendrogram(hr), Colv=as.dendrogram(hc), labRow = FALSE)
+dev.off()
+
+
+####PCA PLOT
+
+library(tidyverse)
+library(RColorBrewer)
+library(DESeq2)
+library(pheatmap)
+library(DEGreport)
+library(ggplot2)
+library(pca3d)
+
+data <- read.delim("Raw_MassSpec_Data.txt", header=T, row.names=1)
+data <- data +1 
+data <- log2(data)
+write.csv(data, "Mass spec PCA log2.csv")
+
+## Load in data
+data <- read.delim("Mass spec PCA log2_Final.txt", header=T, row.names=1)
+meta <- read.table("Massspec_Meta.txt", header=T, row.names=1)
+
+mean_counts <- apply(data, 1, mean)
+variance_counts <- apply(data, 1, var)
+df <- data.frame(mean_counts, variance_counts)
+
+
+all(colnames(data) %in% rownames(meta))
+all(colnames(data) == rownames(meta))
+
+## Create DESeq2Dataset object
+dds <- DESeqDataSetFromMatrix(countData = round(data), colData = meta, design = ~ SampleType)
+
+dds <- estimateSizeFactors(dds)
+
+sizeFactors(dds)
+normalized_counts <- counts(dds, normalized=TRUE)
+
+
+rld <- rlog(dds, blind=TRUE) 
+
+### Plot PCA
+plotPCA(rld, intgroup="SampleType",ntop=1500)
+plotPCA(rld, intgroup="SampleName",ntop=1500)
+
+# Input is a matrix of log transformed values
+rld <- rlog(dds, blind=T)
+rld_mat <- assay(rld)
+pca <- prcomp(t(rld_mat))
+
+# Create data frame with metadata and PC and PC values for input to ggplot
+df <- cbind(meta, pca$x)
+
+tiff(file="2022_7_29_LGACC_mass_spec_PCA.tiff", width = 10, height = 20, units = "in", res = 800)
+ggplot(df, aes(x=PC1, y=PC2,color = SampleType, label=rownames(pca$x), frame = TRUE, frame.type = 'norm'))+
+ theme(legend.key.size = unit(2.5, 'cm'),  legend.key.width= unit(2.5, 'cm'),legend.title = element_text(size=25), legend.text = element_text(size=20),legend.position = c(0.88, 0.93), axis.text=element_text(size=22), axis.title=element_text(size=25,face="bold")) +
+  geom_point(size=6) +
+  geom_text_repel(label=rownames(pca$x),hjust=0, vjust=0,size=9, show.legend = FALSE) +
+  xlim(-20,50)
+dev.off()
+
+
+####LIMMA ANALYSIS
+library(edgeR)
+library(limma)
+library(Glimma)
+library(gplots)
+library(org.Mm.eg.db)
+library(SummarizedExperiment)
+library(readxl)
+library(tibble)
+library(vsn)
+
+data <- read_excel("Raw_MassSpec_Data.xlsx")
+
+groups <- factor(c("N","N","N","N","T","T","T","T","T","T","T"))
+
+raw <-  data[,2:12]
+raw <- raw + 1
+raw <- log2(raw)
+
+colNames <- data[,1]
+
+raw[,12] <- colNames
+
+raw[c(12,1,2,3,4,5,6,7,8,9,10,11)]
+
+raw <- column_to_rownames(raw, var = "Gene Names")
+se <- SummarizedExperiment(assay = as.matrix(raw))
+
+se_vsn <- se
+
+vsn.fit <- vsn::vsnMatrix(2 ^ assay(se_vsn))
+meanSdPlot(se_vsn)
+assay(se_vsn) <- vsn::predict(vsn.fit, 2 ^ assay(se_vsn))
+design <- model.matrix(~groups)
+lmfit <- lmFit(assay(se_vsn),design)
+
+assay <- assay(se_vsn)
+
+lmfit <- eBayes(lmfit, trend=TRUE)
+
+table <- topTable(lmfit, coef = 2, number = Inf)
+
+write.csv(table, "2022_1_11_MassSpec_Limma_toptable.csv")
+
+t <- read.csv("2022_1_11_MassSpec_Limma_toptable.csv")
+
+x <-merge(data, t, by.x="Gene Names", by.y="X")
+
+write.csv(x, "MassSpec_limma_output.csv")
+
+
+###Volcano Plot
+library(dplyr)
+library(ggplot2)
+library(ggrepel)
+
+d <- read.table("Final_MassSpec_VolcanoInput.txt",header = T, stringsAsFactors = F, check.names=FALSE)
+
+p = ggplot(data=d, aes(x=logFC, y=-log10(P.Value))) + geom_point() + theme_minimal()
+
+p2 = p + geom_vline(xintercept=c(-0.6, 0.6), col="red") +
+    geom_hline(yintercept=-log10(0.05), col="red")
+
+
+d$DEG <- "No"
+d$DEG[d$logFC > 2 & d$P.Value < 0.05] <- "Up"
+d$DEG[d$logFC < -2 & d$P.Value < 0.05] <- "Down"
+
+p <- ggplot(data=d, aes(x=logFC, y=-log10(P.Value)), col=DEG) + geom_point() + theme_minimal()
+
+
+p2 <- p + geom_vline(xintercept=c(-2, 2), col="red") +
+        geom_hline(yintercept=-log10(0.05), col="red")    
+
+p3 <- p2 + scale_color_manual(values=c("blue", "black", "red"))
+
+
+mycolors <- c("blue", "red", "black")
+names(mycolors) <- c("DOWN", "UP", "NO")
+p3 <- p2 + scale_colour_manual(values = mycolors)        
+
+d$delabel <- NA
+d$delabel[d$DEG != "NO"] <- d$GeneName[d$DEG != "NO"]
+
+
+tiff("MassSpec_Volcano_output.tiff", units="in", width=8, height=5, res=800)
+ggplot(data=d, aes(x=logFC, y=-log10(P.Value), col=DEG)) + 
+    geom_point(size = 1) + 
+    theme_minimal() +
+    guides(col = guide_legend(override.aes = list(size=7))) +
+    labs(col="Differential Expression") +
+    theme(axis.text.x = element_text(size = 15)) + theme(axis.text.y     = element_text(size = 15)) + theme(axis.title =             
+    element_text(size=15))
+dev.off()
